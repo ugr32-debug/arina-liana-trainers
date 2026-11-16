@@ -22,6 +22,8 @@ button:hover,select:hover{background:#edf6ef}
 button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #257e64;outline-offset:2px}
 button.primary{background:#195f4b;color:#fff;border-color:#195f4b;font-weight:750}
 button.primary:hover{background:#114836}
+.options{display:flex;flex-wrap:wrap;gap:8px 16px}
+.mode select{max-width:100%}
 .mode{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#445c54}
 h2{font-size:clamp(26px,5.5vw,42px);margin:16px 0 14px;line-height:1.25;overflow-wrap:anywhere}
 .fields,.actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
@@ -49,13 +51,23 @@ input[type=checkbox]{accent-color:#195f4b}
     <div class="score">Верно <span id="score">0</span></div>
   </header>
   <section class="card" aria-labelledby="task">
-    <label class="mode">Направление
+    <div class="options">
+    <label class="mode">Задания
       <select id="mode">
-        <option value="mixed">В обе стороны</option>
-        <option value="single">В одну единицу</option>
-        <option value="parts">В две единицы</option>
+        <option value="mixed">Составные в обе стороны</option>
+        <option value="single">Составная → одна</option>
+        <option value="parts">Одна → составная</option>
+        <option value="simple">Простые переводы</option>
       </select>
     </label>
+    <label class="mode">Сложность
+      <select id="difficulty">
+        <option value="easy">Лёгкий</option>
+        <option value="medium">Средний</option>
+        <option value="hard">Сложный</option>
+      </select>
+    </label>
+    </div>
     <h2 id="task" aria-live="polite"></h2>
     <form id="exercise">
       <div class="fields" id="fields"></div>
@@ -115,22 +127,106 @@ const controls = topics.map(([title, units]) => {
   return {active: active.box, leaves};
 });
 
-function availablePairs() {
-  return topics.flatMap(([, units], topic) => {
-    if (!controls[topic].active.checked) return [];
-    const selected = units.filter((_, index) => controls[topic].leaves[index].checked);
-    return selected.flatMap((large, index) => selected.slice(index + 1).map(small => [large, small]));
-  });
+function availableTopics() {
+  return topics.map(([, units], topic) => controls[topic].active.checked
+    ? units.filter((_, index) => controls[topic].leaves[index].checked)
+    : []
+  ).filter(units => units.length >= 2);
 }
+
+const levels = {
+  easy: {whole: [1, 5], remainder: 9},
+  medium: {whole: [6, 35], remainder: 99},
+  hard: {whole: [20, 120], remainder: 999}
+};
 const randomInteger = (low, high) => low + Math.floor(Math.random() * (high - low + 1));
-function buildProblem(pair, mode) {
-  const [[large, bigFactor], [small, smallFactor]] = pair;
-  const factor = bigFactor / smallFactor;
-  const whole = randomInteger(1, 12);
-  const tail = randomInteger(1, Math.min(factor - 1, 999));
-  const total = whole * factor + tail;
+const pick = values => values[randomInteger(0, values.length - 1)];
+
+function chooseUnits(selected, difficulty, simple) {
+  if (difficulty === "easy") {
+    const index = randomInteger(0, selected.length - 2);
+    return selected.slice(index, index + 2);
+  }
+
+  const pairs = selected.flatMap((large, index) =>
+    selected.slice(index + 1).map(small => [large, small])
+  );
+  if (simple || difficulty === "medium" || selected.length < 3) return pick(pairs);
+
+  const triples = selected.flatMap((large, index) =>
+    selected.slice(index + 1).flatMap((middle, offset) =>
+      selected.slice(index + offset + 2).map(small => [large, middle, small])
+    )
+  );
+  return pick(triples);
+}
+
+function buildProblem(selected, mode, difficulty) {
+  const simple = mode === "simple";
+  const units = chooseUnits(selected, difficulty, simple);
+  const [small, baseFactor] = units[units.length - 1];
+  const scale = units.map(([, factor]) => factor / baseFactor);
+  const {whole, remainder} = levels[difficulty];
+
+  if (simple) {
+    const [large] = units[0];
+    const quantity = difficulty === "easy" && Math.random() < .45 ? 1 : randomInteger(...whole);
+    const reverse = Math.random() < .5;
+    const from = reverse ? small : large;
+    const to = reverse ? large : small;
+    const given = reverse ? quantity * scale[0] : quantity;
+    const answer = reverse ? quantity : quantity * scale[0];
+    const operation = reverse ? " ÷ " : " × ";
+    return {
+      prompt: measure(given, from) + " = ? " + to,
+      answers: [[to, answer]],
+      solution: "1 " + large + " = " + measure(scale[0], small) + ". " +
+        number.format(given) + operation + number.format(scale[0]) + " = " + measure(answer, to) + ".",
+      hint: reverse ? "Раздели на число меньших единиц в одной большей." :
+        "Умножь на число меньших единиц в одной большей."
+    };
+  }
+
+  const quantities = units.map(([, factor], index) => index === 0
+    ? randomInteger(...whole)
+    : randomInteger(1, Math.min(remainder, units[index - 1][1] / factor - 1))
+  );
+  const total = quantities.reduce((sum, value, index) => sum + value * scale[index], 0);
   const parts = mode === "parts" || (mode === "mixed" && Math.random() < .5);
-  return {large, small, factor, whole, tail, total, parts};
+  const components = units.map(([unit], index) => [unit, quantities[index]]);
+  const written = components.map(([unit, value]) => measure(value, unit)).join(" ");
+  const targets = units.map(([unit]) => "? " + unit).join(" ");
+  const conversion = units.slice(0, -1).map(([unit], index) =>
+    "1 " + unit + " = " + measure(scale[index], small)
+  ).join(". ") + ". ";
+
+  let steps;
+  if (parts) {
+    let rest = total;
+    steps = scale.slice(0, -1).map((factor, index) => {
+      const before = rest;
+      rest %= factor;
+      return number.format(before) + " ÷ " + number.format(factor) + " = " +
+        number.format(quantities[index]) + " (остаток " + number.format(rest) + ")";
+    }).join(". ") + ". Ответ: " + written + ".";
+  } else {
+    steps = quantities.map((value, index) => scale[index] === 1
+      ? number.format(value)
+      : number.format(value) + " × " + number.format(scale[index])
+    ).join(" + ") + " = " + measure(total, small) + ".";
+  }
+
+  return {
+    prompt: parts ? measure(total, small) + " = " + targets : written + " = ? " + small,
+    answers: parts ? components : [[small, total]],
+    solution: conversion + steps,
+    hint: parts ? "Начни с самой большой единицы, затем переведи остаток." :
+      "Переведи каждую часть в меньшую единицу и сложи."
+  };
+}
+
+function measure(value, unit) {
+  return number.format(value) + " " + unit;
 }
 
 function tell(message, state = "") {
@@ -155,59 +251,47 @@ function addField(unit) {
 }
 
 function newProblem(focus = false) {
-  const pairs = availablePairs();
+  const groups = availableTopics();
   tell("");
   byId("fields").replaceChildren();
-  exercise.hidden = !pairs.length;
-  if (!pairs.length) {
+  exercise.hidden = !groups.length;
+  if (!groups.length) {
     problem = null;
     byId("task").textContent = "Включи хотя бы две единицы из одной темы";
     return;
   }
-  problem = buildProblem(pairs[randomInteger(0, pairs.length - 1)], byId("mode").value);
-  const {large, small, whole, tail, total, parts} = problem;
-  byId("task").textContent = parts
-    ? number.format(total) + " " + small + " = ? " + large + " ? " + small
-    : whole + " " + large + " " + tail + " " + small + " = ? " + small;
-  if (parts) addField(large);
-  addField(small);
+  const selected = pick(groups);
+  problem = buildProblem(selected, byId("mode").value, byId("difficulty").value);
+  byId("task").textContent = problem.prompt;
+  problem.answers.forEach(([unit]) => addField(unit));
   byId("check").disabled = false;
   byId("solution").disabled = false;
   if (focus) exercise.querySelector("input").focus();
-}
-
-function explanation(p) {
-  const {large, small, factor, whole, tail, total, parts} = p;
-  const equivalence = "1 " + large + " = " + number.format(factor) + " " + small + ". ";
-  const calculation = parts
-    ? number.format(total) + " ÷ " + number.format(factor) + " = " + whole + " (остаток " + tail + "). Ответ: " + whole + " " + large + " " + tail + " " + small + "."
-    : whole + " × " + number.format(factor) + " + " + tail + " = " + number.format(total) + " " + small + ".";
-  return equivalence + calculation;
 }
 
 exercise.addEventListener("submit", event => {
   event.preventDefault();
   if (!problem || byId("check").disabled) return;
   const answers = [...exercise.querySelectorAll("input")].map(box => Number(box.value));
-  const expected = problem.parts ? [problem.whole, problem.tail] : [problem.total];
-  if (expected.every((value, index) => answers[index] === value)) {
+  if (problem.answers.every(([, value], index) => answers[index] === value)) {
     byId("score").textContent = String(++score);
-    tell("Верно! " + explanation(problem), "right");
+    tell("Верно! " + problem.solution, "right");
     byId("check").disabled = true;
     byId("solution").disabled = true;
     byId("next").focus();
   } else {
-    tell("Попробуй ещё раз. " + (problem.parts ? "Найди целую часть и остаток." : "Переведи большую единицу в меньшую и прибавь остаток."), "wrong");
+    tell("Попробуй ещё раз. " + problem.hint, "wrong");
   }
 });
 byId("solution").addEventListener("click", () => {
-  tell(explanation(problem));
+  tell(problem.solution);
   byId("check").disabled = true;
   byId("solution").disabled = true;
   byId("next").focus();
 });
 byId("next").addEventListener("click", () => newProblem(true));
 byId("mode").addEventListener("change", () => newProblem());
+byId("difficulty").addEventListener("change", () => newProblem());
 byId("settings").addEventListener("change", () => newProblem());
 newProblem();
 </script>
