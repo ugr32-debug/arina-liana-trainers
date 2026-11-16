@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f4f7ed">
+<title>Мерки — тренажёр единиц измерения</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#172e2a;background:#f4f7ed;color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0}
+main{width:min(720px,calc(100% - 32px));margin:38px auto}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:22px}
+h1{font-size:clamp(42px,9vw,70px);line-height:1;margin:0;letter-spacing:-.075em}
+header p{margin:8px 0 0;color:#445c54}
+.score{background:#e1efdc;border-radius:99px;padding:8px 12px;white-space:nowrap;font-weight:700}
+.card,details{background:#fff;border:1px solid #d7e4d9;border-radius:20px;padding:clamp(14px,4vw,26px)}
+label,button,summary{cursor:pointer}
+button,select,input{font:inherit}
+button,select{min-height:44px;border:1px solid #cadcd0;border-radius:10px;padding:8px 12px;color:inherit;background:#fff}
+button:hover,select:hover{background:#edf6ef}
+button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #257e64;outline-offset:2px}
+button.primary{background:#195f4b;color:#fff;border-color:#195f4b;font-weight:750}
+button.primary:hover{background:#114836}
+.mode{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#445c54}
+h2{font-size:clamp(26px,5.5vw,42px);margin:16px 0 14px;line-height:1.25;overflow-wrap:anywhere}
+.fields,.actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.answer{display:inline-flex;align-items:center;gap:8px;font-weight:750}
+.answer input{width:clamp(95px,28vw,155px);min-height:45px;padding:7px 10px;border:1px solid #aac9b9;border-radius:10px}
+.actions{margin-top:16px}
+#feedback{min-height:1.5em;margin:12px 0 0;color:#445c54}
+#feedback[data-state=right]{color:#175844;font-weight:750}
+#feedback[data-state=wrong]{color:#8f352c}
+details{margin-top:14px}
+summary{font-weight:750}
+.settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:14px}
+fieldset{min-width:0;margin:0;border-radius:10px;border:1px solid #d7e4d9;padding:10px}
+legend{font-weight:750}
+.units{display:flex;flex-wrap:wrap;gap:5px 10px}
+.units label{white-space:nowrap}
+input[type=checkbox]{accent-color:#195f4b}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Мерки</h1><p>Единицы измерения · 4–5 класс</p></div>
+    <div class="score">Верно <span id="score">0</span></div>
+  </header>
+  <section class="card" aria-labelledby="task">
+    <label class="mode">Направление
+      <select id="mode">
+        <option value="mixed">В обе стороны</option>
+        <option value="single">В одну единицу</option>
+        <option value="parts">В две единицы</option>
+      </select>
+    </label>
+    <h2 id="task" aria-live="polite"></h2>
+    <form id="exercise">
+      <div class="fields" id="fields"></div>
+      <div class="actions">
+        <button class="primary" id="check">Проверить</button>
+        <button type="button" id="solution">Показать решение</button>
+        <button type="button" id="next">Следующее</button>
+      </div>
+    </form>
+    <p id="feedback" role="status"></p>
+  </section>
+  <details>
+    <summary>Настроить темы и единицы</summary>
+    <div id="settings" class="settings"></div>
+  </details>
+</main>
+<script>
+"use strict";
+const byId = id => document.getElementById(id);
+const topics = [
+  ["Длина", [["км",1000000],["м",1000],["дм",100],["см",10],["мм",1]]],
+  ["Площадь", [["км²",1000000000000],["га",10000000000],["а",100000000],["м²",1000000],["дм²",10000],["см²",100],["мм²",1]]],
+  ["Вместимость", [["л",1000],["мл",1]]],
+  ["Масса", [["т",1000000000],["ц",100000000],["кг",1000000],["г",1000],["мг",1]]],
+  ["Время", [["нед.",604800],["сут.",86400],["ч",3600],["мин",60],["с",1]]],
+  ["Объём", [["м³",1000000000],["дм³",1000000],["см³",1000],["мм³",1]]]
+];
+const number = new Intl.NumberFormat("ru-RU");
+const exercise = byId("exercise");
+const feedback = byId("feedback");
+let problem;
+let score = 0;
+
+function toggle(label) {
+  const wrapper = document.createElement("label");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = true;
+  wrapper.append(box, " " + label);
+  return {wrapper, box};
+}
+
+const controls = topics.map(([title, units]) => {
+  const group = document.createElement("fieldset");
+  const heading = document.createElement("legend");
+  const active = toggle(title);
+  heading.append(active.wrapper);
+  const list = document.createElement("div");
+  list.className = "units";
+  const leaves = units.map(([symbol]) => {
+    const unit = toggle(symbol);
+    list.append(unit.wrapper);
+    return unit.box;
+  });
+  group.append(heading, list);
+  byId("settings").append(group);
+  return {active: active.box, leaves};
+});
+
+function availablePairs() {
+  return topics.flatMap(([, units], topic) => {
+    if (!controls[topic].active.checked) return [];
+    const selected = units.filter((_, index) => controls[topic].leaves[index].checked);
+    return selected.flatMap((large, index) => selected.slice(index + 1).map(small => [large, small]));
+  });
+}
+const randomInteger = (low, high) => low + Math.floor(Math.random() * (high - low + 1));
+function buildProblem(pair, mode) {
+  const [[large, bigFactor], [small, smallFactor]] = pair;
+  const factor = bigFactor / smallFactor;
+  const whole = randomInteger(1, 12);
+  const tail = randomInteger(1, Math.min(factor - 1, 999));
+  const total = whole * factor + tail;
+  const parts = mode === "parts" || (mode === "mixed" && Math.random() < .5);
+  return {large, small, factor, whole, tail, total, parts};
+}
+
+function tell(message, state = "") {
+  feedback.textContent = message;
+  feedback.dataset.state = state;
+}
+
+function addField(unit) {
+  const label = document.createElement("label");
+  label.className = "answer";
+  const box = document.createElement("input");
+  box.name = "answer";
+  box.type = "text";
+  box.inputMode = "numeric";
+  box.autocomplete = "off";
+  box.required = true;
+  box.pattern = "[0-9]+";
+  box.maxLength = 15;
+  box.setAttribute("aria-label", "Ответ в " + unit);
+  label.append(box, " " + unit);
+  byId("fields").append(label);
+}
+
+function newProblem(focus = false) {
+  const pairs = availablePairs();
+  tell("");
+  byId("fields").replaceChildren();
+  exercise.hidden = !pairs.length;
+  if (!pairs.length) {
+    problem = null;
+    byId("task").textContent = "Включи хотя бы две единицы из одной темы";
+    return;
+  }
+  problem = buildProblem(pairs[randomInteger(0, pairs.length - 1)], byId("mode").value);
+  const {large, small, whole, tail, total, parts} = problem;
+  byId("task").textContent = parts
+    ? number.format(total) + " " + small + " = ? " + large + " ? " + small
+    : whole + " " + large + " " + tail + " " + small + " = ? " + small;
+  if (parts) addField(large);
+  addField(small);
+  byId("check").disabled = false;
+  byId("solution").disabled = false;
+  if (focus) exercise.querySelector("input").focus();
+}
+
+function explanation(p) {
+  const {large, small, factor, whole, tail, total, parts} = p;
+  const equivalence = "1 " + large + " = " + number.format(factor) + " " + small + ". ";
+  const calculation = parts
+    ? number.format(total) + " ÷ " + number.format(factor) + " = " + whole + " (остаток " + tail + "). Ответ: " + whole + " " + large + " " + tail + " " + small + "."
+    : whole + " × " + number.format(factor) + " + " + tail + " = " + number.format(total) + " " + small + ".";
+  return equivalence + calculation;
+}
+
+exercise.addEventListener("submit", event => {
+  event.preventDefault();
+  if (!problem || byId("check").disabled) return;
+  const answers = [...exercise.querySelectorAll("input")].map(box => Number(box.value));
+  const expected = problem.parts ? [problem.whole, problem.tail] : [problem.total];
+  if (expected.every((value, index) => answers[index] === value)) {
+    byId("score").textContent = String(++score);
+    tell("Верно! " + explanation(problem), "right");
+    byId("check").disabled = true;
+    byId("solution").disabled = true;
+    byId("next").focus();
+  } else {
+    tell("Попробуй ещё раз. " + (problem.parts ? "Найди целую часть и остаток." : "Переведи большую единицу в меньшую и прибавь остаток."), "wrong");
+  }
+});
+byId("solution").addEventListener("click", () => {
+  tell(explanation(problem));
+  byId("check").disabled = true;
+  byId("solution").disabled = true;
+  byId("next").focus();
+});
+byId("next").addEventListener("click", () => newProblem(true));
+byId("mode").addEventListener("change", () => newProblem());
+byId("settings").addEventListener("change", () => newProblem());
+newProblem();
+</script>
+</body>
+</html>
