@@ -29,6 +29,11 @@ h2{font-size:clamp(26px,5.5vw,42px);margin:16px 0 14px;line-height:1.25;overflow
 .fields,.actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .answer{display:inline-flex;align-items:center;gap:8px;font-weight:750}
 .answer input{width:clamp(95px,28vw,155px);min-height:45px;padding:7px 10px;border:1px solid #aac9b9;border-radius:10px}
+.comparison{display:flex;gap:8px;border:0;padding:0}
+.comparison legend{margin-bottom:8px}
+.sign-choice{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:62px;min-height:46px;padding:6px 10px;border:1px solid #aac9b9;border-radius:10px;font-size:23px;font-weight:750}
+.sign-choice:has(input:checked){background:#e1efdc;border-color:#195f4b}
+.sign-choice input{margin:0;cursor:pointer;accent-color:#195f4b}
 .actions{margin-top:16px}
 #feedback{min-height:1.5em;margin:12px 0 0;color:#445c54}
 #feedback[data-state=right]{color:#175844;font-weight:750}
@@ -58,6 +63,7 @@ input[type=checkbox]{accent-color:#195f4b}
         <option value="single">Составная → одна</option>
         <option value="parts">Одна → составная</option>
         <option value="simple">Простые переводы</option>
+        <option value="compare">Сравнение величин</option>
       </select>
     </label>
     <label class="mode">Сложность
@@ -168,6 +174,8 @@ function buildProblem(selected, mode, difficulty) {
   const scale = units.map(([, factor]) => factor / baseFactor);
   const {whole, remainder} = levels[difficulty];
 
+  if (mode === "compare") return buildComparison(units, scale, difficulty);
+
   if (simple) {
     const [large] = units[0];
     const quantity = difficulty === "easy" && Math.random() < .45 ? 1 : randomInteger(...whole);
@@ -187,10 +195,7 @@ function buildProblem(selected, mode, difficulty) {
     };
   }
 
-  const quantities = units.map(([, factor], index) => index === 0
-    ? randomInteger(...whole)
-    : randomInteger(1, Math.min(remainder, units[index - 1][1] / factor - 1))
-  );
+  const quantities = compoundQuantities(units, whole, remainder);
   const total = quantities.reduce((sum, value, index) => sum + value * scale[index], 0);
   const parts = mode === "parts" || (mode === "mixed" && Math.random() < .5);
   const components = units.map(([unit], index) => [unit, quantities[index]]);
@@ -225,6 +230,40 @@ function buildProblem(selected, mode, difficulty) {
   };
 }
 
+function compoundQuantities(units, whole, remainder) {
+  return units.map(([, factor], index) => index === 0
+    ? randomInteger(...whole)
+    : randomInteger(1, Math.min(remainder, units[index - 1][1] / factor - 1))
+  );
+}
+
+function buildComparison(units, scale, difficulty) {
+  const {whole, remainder} = levels[difficulty];
+  const [small] = units[units.length - 1];
+  const single = difficulty === "easy" || (difficulty === "medium" && Math.random() < .5);
+  const quantities = single ? [randomInteger(...whole)] : compoundQuantities(units, whole, remainder);
+  const original = {
+    display: quantities.map((value, index) => measure(value, units[index][0])).join(" "),
+    value: quantities.reduce((sum, value, index) => sum + value * scale[index], 0)
+  };
+
+  // Give equality the same chance as either inequality.
+  const direction = pick([-1, 0, 1]);
+  const shift = randomInteger(1, Math.min(original.value - 1, remainder));
+  const otherValue = original.value + direction * shift;
+  const converted = {display: measure(otherValue, small), value: otherValue};
+  const [left, right] = Math.random() < .5 ? [original, converted] : [converted, original];
+  const sign = left.value === right.value ? "=" : left.value < right.value ? "<" : ">";
+
+  return {
+    prompt: left.display + " □ " + right.display,
+    sign,
+    solution: original.display + " = " + measure(original.value, small) + ". " +
+      measure(left.value, small) + " " + sign + " " + measure(right.value, small) + ".",
+    hint: "Вырази обе величины в одной единице и сравни числа."
+  };
+}
+
 function measure(value, unit) {
   return number.format(value) + " " + unit;
 }
@@ -250,6 +289,27 @@ function addField(unit) {
   byId("fields").append(label);
 }
 
+function addSignChoices() {
+  const group = document.createElement("fieldset");
+  group.className = "comparison";
+  const legend = document.createElement("legend");
+  legend.textContent = "Выбери знак";
+  group.append(legend);
+  for (const [sign, name] of [["<", "Меньше"], ["=", "Равно"], [">", "Больше"]]) {
+    const label = document.createElement("label");
+    label.className = "sign-choice";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "comparison";
+    input.value = sign;
+    input.required = true;
+    input.setAttribute("aria-label", name);
+    label.append(input, sign);
+    group.append(label);
+  }
+  byId("fields").append(group);
+}
+
 function newProblem(focus = false) {
   const groups = availableTopics();
   tell("");
@@ -263,7 +323,11 @@ function newProblem(focus = false) {
   const selected = pick(groups);
   problem = buildProblem(selected, byId("mode").value, byId("difficulty").value);
   byId("task").textContent = problem.prompt;
-  problem.answers.forEach(([unit]) => addField(unit));
+  if (problem.sign) {
+    addSignChoices();
+  } else {
+    problem.answers.forEach(([unit]) => addField(unit));
+  }
   byId("check").disabled = false;
   byId("solution").disabled = false;
   if (focus) exercise.querySelector("input").focus();
@@ -272,8 +336,12 @@ function newProblem(focus = false) {
 exercise.addEventListener("submit", event => {
   event.preventDefault();
   if (!problem || byId("check").disabled) return;
-  const answers = [...exercise.querySelectorAll("input")].map(box => Number(box.value));
-  if (problem.answers.every(([, value], index) => answers[index] === value)) {
+  const correct = problem.sign
+    ? exercise.querySelector('input[name="comparison"]:checked')?.value === problem.sign
+    : [...exercise.querySelectorAll("input")].every((box, index) =>
+      Number(box.value) === problem.answers[index][1]
+    );
+  if (correct) {
     byId("score").textContent = String(++score);
     tell("Верно! " + problem.solution, "right");
     byId("check").disabled = true;
